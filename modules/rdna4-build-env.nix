@@ -79,8 +79,7 @@ in
       #
       ++ lib.optionals cfg.enableRocm (with pkgs.rocmPackages; [
         llvm.clang  # HIP compiler (clang++ with AMDGCN backend)
-        clr         # HIP/OpenCL runtime + headers
-        clr.dev     # Development headers
+        clr         # HIP/OpenCL runtime + headers (dev headers included)
         hipblas     # HIP BLAS API
         rocblas     # BLAS kernels
         rocwmma     # Flash Attention headers (RDNA4 cooperative matrix)
