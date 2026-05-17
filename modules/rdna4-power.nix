@@ -34,8 +34,6 @@
   # already loaded in ryzen.nix. lm-sensors reads the chip; fancontrol
   # applies curve rules. Run `sudo sensors-detect --auto` post-deploy
   # to generate /etc/sensors3.conf, then `sudo pwmconfig` for /etc/fancontrol.
-  services.lm_sensors.enable = true;
-
   # Uncomment once /etc/fancontrol is generated and validated:
   # services.fancontrol.enable = true;
 
