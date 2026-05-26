@@ -109,7 +109,6 @@
               # Provides the HIP runtime, OpenCL ICD, and ROCm device libs.
               # cmake's FindHIP looks here.
               clr
-              clr.dev  # headers
 
               # BLAS API and kernels — required for llama.cpp matrix ops
               hipblas
@@ -199,7 +198,7 @@
               # Point Vulkan to RADV ICD. On a system with rdna4-base active,
               # the amdgpu driver provides the ICD automatically. In a devShell
               # without a full NixOS amdgpu stack, this ensures the correct ICD.
-              export VK_ICD_FILENAMES="${pkgs.mesa.drivers}/share/vulkan/icd.d/radeon_icd.x86_64.json"
+              export VK_ICD_FILENAMES="${pkgs.mesa}/share/vulkan/icd.d/radeon_icd.x86_64.json"
 
               echo "llama.cpp Vulkan build environment (RADV/RDNA4)"
               echo "glslc:  $(which glslc)"
