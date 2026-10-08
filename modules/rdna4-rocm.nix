@@ -30,11 +30,22 @@
   # AMD's toolchain and most ML frameworks hard-code /opt/rocm for library
   # discovery. This is the canonical NixOS workaround.
   #
-  # Add paths here as your workload requires (e.g. rocSPARSE, MIOpen).
+  # SOURCE OF /opt/rocm:
+  #   - If the host applies overlays.rocm-sysroot (pkgs.rdna4.rocmSysroot
+  #     exists), /opt/rocm is that sysroot. It adds hipcc, rocm-runtime,
+  #     rocm-device-libs, rocm-comgr, rocm-core and llvm -> ROCm clang, so a
+  #     generic HIP CMake project can build against /opt/rocm.
+  #   - Else /opt/rocm is the original rocm-combined-gfx1201 join below.
+  #     That join serves llama.cpp, not a generic HIP CMake project.
+  #
+  # Add paths to the fallback list as your workload requires
+  # (e.g. rocSPARSE, MIOpen).
   #
   systemd.tmpfiles.rules =
     let
-      rocmEnv = pkgs.symlinkJoin {
+      hasSysroot = pkgs ? rdna4 && pkgs.rdna4 ? rocmSysroot;
+
+      rocmEnv = if hasSysroot then pkgs.rdna4.rocmSysroot else pkgs.symlinkJoin {
         name  = "rocm-combined-gfx1201";
         paths = with pkgs.rocmPackages; [
           clr       # HSA runtime, HIP runtime, OpenCL ICD, device libs
