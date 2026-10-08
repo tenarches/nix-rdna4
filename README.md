@@ -422,9 +422,11 @@ When enabled:
 - `security.pam.loginLimits` sets `memlock` to `unlimited` (soft and hard)
   and `nofile` to `rdna4.limits.nofile` (soft and hard) for each group.
 - `boot.kernel.sysctl."vm.max_map_count"` is `rdna4.limits.maxMapCount`.
-  NixOS sets the same value with `mkDefault`. This module sets it at priority
-  999, so the value stays if the NixOS default changes. A direct host setting
-  still wins.
+  NixOS sets the same value with `mkDefault` (priority 1000). This module sets
+  it with `mkOverride 999`, so the value stays if the NixOS default changes.
+  A plain host assignment (priority 100) wins over this module. A host value
+  set with `lib.mkDefault` does not win. To change the value, set
+  `rdna4.limits.maxMapCount`.
 
 PAM limits apply to login sessions (console, ssh, su, sudo) and to the
 processes they start. PAM limits do not apply to systemd services. For a GPU
@@ -492,9 +494,18 @@ The overlay adds one attribute set, `pkgs.rdna4`:
 | `gpuTargets` | the default list, `[ "gfx1201" ]` |
 
 `rocmSysroot` joins `clr`, `hipcc`, `rocm-runtime`, `rocm-device-libs`,
-`rocm-comgr`, `rocminfo`, `rocm-smi`, `rocm-core`, `rocblas` and `hipblas`.
-`llvm` is a link to `rocmPackages.llvm.clang`, so `llvm/bin/clang++` and
-`llvm/bin/amdgpu-arch` exist. `bin/hipcc` is the `clr` wrapper.
+`rocm-comgr`, `rocminfo`, `rocm-smi`, `rocm-core`, `rocblas`, `hipblas` and
+`hipblas-common`. `hipblas.h` includes `<hipblas-common/hipblas-common.h>`, so
+`hipblas-common` is necessary. `llvm` is a link to `rocmPackages.llvm.clang`,
+so `llvm/bin/clang++` and `llvm/bin/amdgpu-arch` exist. `bin/hipcc` is the
+`clr` wrapper.
+
+The sysroot does not keep the `clr` files in `nix-support`. The `clr` setup
+hook exports `HIP_PATH=<clr>` and would override `hipEnv`. The sysroot has its
+own setup hook. That hook sets each `hipEnv` variable to the sysroot value,
+but only if the variable is empty. Thus `hipEnv` or `mkHipEnv` attributes on
+a shell or derivation always win. The sysroot propagates no inputs, because
+all of them are in the join.
 
 `hipEnv` keys: `ROCM_PATH`, `HIP_PATH`, `HIP_DEVICE_LIB_PATH`, `HIPCXX`,
 `CMAKE_HIP_COMPILER`, `CMAKE_HIP_COMPILER_ROCM_ROOT`, `GPU_TARGETS`,
@@ -511,7 +522,12 @@ pkgs.stdenv.mkDerivation ({
 
 The check `checks.x86_64-linux.rocm-sysroot` builds the sysroot. It confirms
 that `bin/hipcc`, `lib/libhsa-runtime64.so`, `amdgcn/bitcode`,
-`llvm/bin/clang++` and `llvm/bin/amdgpu-arch` exist.
+`llvm/bin/clang++`, `llvm/bin/amdgpu-arch`, `include/hipblas/hipblas.h` and
+`include/hipblas-common/hipblas-common.h` exist. It also confirms that the
+setup hook does not refer to `clr`.
+
+The checks `sysroot-setup-hook` and `sysroot-setup-hook-keeps-env` test the
+setup hook with small stand-in packages. They build no ROCm.
 
 ---
 
