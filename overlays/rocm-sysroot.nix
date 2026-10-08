@@ -68,6 +68,15 @@ let
       #    The new setup hook sets each hipEnv variable to the sysroot value
       #    ONLY IF the variable is empty. Thus hipEnv (or mkHipEnv) attributes
       #    on the shell or derivation always win.
+      #
+      #    The hook also keeps two settings from the clr hook, with the same
+      #    default-if-empty rule:
+      #      HIP_PLATFORM=amd
+      #      NIX_CC_USE_RESPONSE_FILE=0  llvm/bin/clang++ is a cc-wrapped
+      #        clang. A wrapped clang uses response files by default. Every
+      #        nixpkgs ROCm consumer gets 0 from the clr hook.
+      #    The hook does not set HIP_CLANG_PATH or HSA_PATH. No clr store
+      #    path leaks into HIP_PATH, HIP_DEVICE_LIB_PATH or HIP_CLANG_PATH.
       postBuild = ''
         rm -rf "$out/llvm"
         ln -s ${clang} "$out/llvm"
@@ -84,6 +93,8 @@ let
         : "\''${CMAKE_HIP_COMPILER_ROCM_ROOT:=$out}"; export CMAKE_HIP_COMPILER_ROCM_ROOT
         : "\''${GPU_TARGETS:=${targetsString gpuTargets}}"; export GPU_TARGETS
         : "\''${AMDGPU_TARGETS:=${targetsString gpuTargets}}"; export AMDGPU_TARGETS
+        : "\''${HIP_PLATFORM:=amd}"; export HIP_PLATFORM
+        : "\''${NIX_CC_USE_RESPONSE_FILE:=0}"; export NIX_CC_USE_RESPONSE_FILE
         EOF
       '';
 

@@ -90,7 +90,7 @@
               (pkgs.runCommand "fake-clr" {} ''
                 mkdir -p $out/bin $out/llvm $out/nix-support
                 echo clr > $out/bin/hipcc
-                echo 'export HIP_PATH=/wrong; export GPU_TARGETS=wrong' \
+                echo 'export HIP_PATH=/wrong HIP_DEVICE_LIB_PATH=/wrong HIP_CLANG_PATH=/wrong GPU_TARGETS=wrong' \
                   > $out/nix-support/setup-hook
                 echo /nix/store/00000000000000000000000000000000-x \
                   > $out/nix-support/propagated-build-inputs
@@ -353,6 +353,10 @@
               test "$CMAKE_HIP_COMPILER" = "$f/llvm/bin/clang++" || fail "CMAKE_HIP_COMPILER"
               test "$GPU_TARGETS" = "gfx1201" || fail "GPU_TARGETS=$GPU_TARGETS"
               test "$AMDGPU_TARGETS" = "gfx1201" || fail "AMDGPU_TARGETS"
+              test "$HIP_PLATFORM" = amd || fail "HIP_PLATFORM=$HIP_PLATFORM"
+              test "$NIX_CC_USE_RESPONSE_FILE" = 0 || fail "NIX_CC_USE_RESPONSE_FILE"
+              test -z "''${HIP_CLANG_PATH:-}" || fail "HIP_CLANG_PATH=$HIP_CLANG_PATH"
+              case "$HIP_PATH $HIP_DEVICE_LIB_PATH" in *wrong*) fail "clr value leaked";; esac
               test "$(cat $f/bin/hipcc)" = clr || fail "bin/hipcc is not the clr one"
               test "$(cat $f/llvm/bin/clang++)" = clang || fail "llvm link"
               test ! -e $f/nix-support/propagated-build-inputs || fail "propagated inputs"
@@ -365,10 +369,14 @@
               buildInputs = [ fakeSysroot ];
               HIP_PATH = "/custom/hip";
               GPU_TARGETS = "gfx1200;gfx1201";
+              HIP_PLATFORM = "custom";
+              NIX_CC_USE_RESPONSE_FILE = "1";
             } ''
               set -eu
               test "$HIP_PATH" = /custom/hip
               test "$GPU_TARGETS" = "gfx1200;gfx1201"
+              test "$HIP_PLATFORM" = custom
+              test "$NIX_CC_USE_RESPONSE_FILE" = 1
               test "$ROCM_PATH" = ${fakeSysroot}
               echo "sysroot-setup-hook-keeps-env: pass" > $out
             '';

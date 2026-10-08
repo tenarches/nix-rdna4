@@ -504,8 +504,20 @@ The sysroot does not keep the `clr` files in `nix-support`. The `clr` setup
 hook exports `HIP_PATH=<clr>` and would override `hipEnv`. The sysroot has its
 own setup hook. That hook sets each `hipEnv` variable to the sysroot value,
 but only if the variable is empty. Thus `hipEnv` or `mkHipEnv` attributes on
-a shell or derivation always win. The sysroot propagates no inputs, because
-all of them are in the join.
+a shell or derivation always win.
+
+The hook also sets `HIP_PLATFORM=amd` and `NIX_CC_USE_RESPONSE_FILE=0`, with
+the same rule (only if empty). The `clr` hook sets both. `llvm/bin/clang++` is
+a cc-wrapped clang, and a wrapped clang uses response files by default. The
+hook does not set `HIP_CLANG_PATH` or `HSA_PATH`.
+
+The sysroot propagates no inputs. `clr` propagates `rocm-core`,
+`rocm-device-libs`, `rocm-comgr`, `rocm-runtime`, `rocminfo` and
+`hipClang/bin`. The first five are in the join. `hipClang/bin` is not in the
+join. It is the clang that the `clr` `hipcc` wrapper uses through its own
+`HIP_CLANG_PATH`. The sysroot `llvm` link is `rocmPackages.llvm.clang`
+(`rocm-toolchain`), a different store path. A consumer that needs
+`hipClang` on `PATH` must add it.
 
 `hipEnv` keys: `ROCM_PATH`, `HIP_PATH`, `HIP_DEVICE_LIB_PATH`, `HIPCXX`,
 `CMAKE_HIP_COMPILER`, `CMAKE_HIP_COMPILER_ROCM_ROOT`, `GPU_TARGETS`,
