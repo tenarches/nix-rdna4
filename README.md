@@ -20,6 +20,8 @@ the Radeon AI PRO R9700, RX 9070 XT, RX 9070, and RX 9060 XT series.
 - [Using the devShells to build llama.cpp](#using-the-devshells-to-build-llamacpp)
 - [Module reference](#module-reference)
 - [ISA overlay](#isa-overlay)
+- [ROCm sysroot overlay](#rocm-sysroot-overlay)
+- [Consumers](#consumers)
 - [Post-deploy verification](#post-deploy-verification)
 - [Invariants](#invariants)
 
@@ -166,7 +168,7 @@ inputs = {
 ### 2. Import the modules in a NixOS host configuration
 
 The convenience module `rdna4-full` imports `rdna4-base`, `rdna4-rocm`,
-`rdna4-power`, and `rdna4-build-env` in one shot:
+`rdna4-power`, `rdna4-build-env`, and `rdna4-limits` in one shot:
 
 ```nix
 # hosts/your-rdna4-host/default.nix or a hardware profile
@@ -260,6 +262,31 @@ cmake -S . -B build \
 cmake --build build --parallel $(nproc)
 ```
 
+### Generic HIP CMake project (`devShells.hip`)
+
+`devShells.hip` is a HIP build shell for any CMake project. It does not
+contain llama.cpp specifics. It uses the [ROCm sysroot overlay](#rocm-sysroot-overlay),
+so it does not rebuild `clr`.
+
+```bash
+nix develop github:tenarches/nix-rdna4#hip
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_HIP_ARCHITECTURES="$GPU_TARGETS"
+cmake --build build
+```
+
+The shell contains `cmake`, `ninja`, `pkg-config` and the sysroot. It exports
+every variable in `pkgs.rdna4.hipEnv`:
+
+| Variable | Value |
+|---|---|
+| `ROCM_PATH`, `HIP_PATH`, `CMAKE_HIP_COMPILER_ROCM_ROOT` | the sysroot |
+| `HIP_DEVICE_LIB_PATH` | `<sysroot>/amdgcn/bitcode` |
+| `HIPCXX`, `CMAKE_HIP_COMPILER` | `<sysroot>/llvm/bin/clang++` |
+| `GPU_TARGETS`, `AMDGPU_TARGETS` | `gfx1201` |
+
+The shell does not need `/opt/rocm` on the host.
+
 ### Without entering a devShell
 
 If `rdna4.buildEnv.enable = true` is set in your NixOS config, the same
@@ -291,6 +318,13 @@ ROCm 7.x compute stack.
 
 - Creates `/opt/rocm` via `systemd.tmpfiles` (required by HIP runtime and most
   ML frameworks for library discovery)
+- Source of `/opt/rocm`: if the host applies `overlays.rocm-sysroot`,
+  `/opt/rocm` is `pkgs.rdna4.rocmSysroot`. That sysroot also contains
+  `hipcc`, `rocm-runtime`, `rocm-device-libs`, `rocm-comgr`, `rocm-core` and
+  `llvm/` (the ROCm clang). Thus a generic HIP CMake project can build against
+  `/opt/rocm`. If the host does not apply the overlay, `/opt/rocm` is the
+  original `rocm-combined-gfx1201` join (`clr`, `rocblas`, `hipblas`,
+  `rocminfo`, `rocm-smi`). That join serves llama.cpp only.
 - Sets `ROCR_VISIBLE_DEVICES=0` and `HCC_AMDGPU_TARGET=gfx1201`
 - Applies udev rules granting `render` group access to `/dev/kfd` and
   `/dev/dri/renderD*`
@@ -358,14 +392,59 @@ imports = [ inputs.rdna4-stack.nixosModules.rdna4-dual ];
 rdna4.dualGpu.enable = true;
 ```
 
-When enabled: sets `ROCR_VISIBLE_DEVICES=0,1`, `HCC_AMDGPU_TARGET=gfx1201,gfx1201`,
+When enabled: sets `ROCR_VISIBLE_DEVICES=0,1`, `HCC_AMDGPU_TARGET=gfx1201`,
 and adds `pcie_bus_config=performance` to kernel parameters.
+`HCC_AMDGPU_TARGET` lists each ISA one time. Both cards are `gfx1201`, so the
+value is `gfx1201`.
+
+### `rdna4-limits`
+
+Resource limits for GPU compute users. Inert until enabled.
+
+```nix
+imports = [ inputs.rdna4-stack.nixosModules.rdna4-limits ];  # or rdna4-full
+rdna4.limits.enable = true;
+```
+
+HIP pins host memory for DMA and for peer-to-peer transfers between GPUs.
+Pinned memory counts against `RLIMIT_MEMLOCK`. A limit of 8 MiB makes large
+pinned buffers fail. This module removes that limit for GPU users.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `rdna4.limits.enable` | bool | false | Enable this module |
+| `rdna4.limits.groups` | list of str | `[ "render" "video" ]` | Groups that get the limits |
+| `rdna4.limits.nofile` | positive int | 65536 | Soft and hard `nofile` |
+| `rdna4.limits.maxMapCount` | positive int | 1048576 | `vm.max_map_count` sysctl |
+
+When enabled:
+
+- `security.pam.loginLimits` sets `memlock` to `unlimited` (soft and hard)
+  and `nofile` to `rdna4.limits.nofile` (soft and hard) for each group.
+- `boot.kernel.sysctl."vm.max_map_count"` is `rdna4.limits.maxMapCount`.
+  NixOS sets the same value with `mkDefault`. This module sets it at priority
+  999, so the value stays if the NixOS default changes. A direct host setting
+  still wins.
+
+PAM limits apply to login sessions (console, ssh, su, sudo) and to the
+processes they start. PAM limits do not apply to systemd services. For a GPU
+service, set `LimitMEMLOCK = "infinity"` and `LimitNOFILE` in `serviceConfig`.
+
+The kernel TTM layer also caps the memory that the GPU can pin. The cap is
+the `ttm.pages_limit` kernel parameter, in 4 KiB pages. The default is half of
+system RAM. This module does not change it. Measure first. Then set it in the
+host, for example `boot.kernelParams = [ "ttm.pages_limit=12582912" ];` for
+48 GiB.
+
+The flake exports `rdna4-limits` as a path module. Thus a host can import
+both `rdna4-full` and `rdna4-limits` without a duplicate-option error.
 
 ### `rdna4-full`
 
 Convenience meta-module. Equivalent to importing `rdna4-base`, `rdna4-rocm`,
-`rdna4-power`, and `rdna4-build-env` individually. Does not include
-`rdna4-dual`.
+`rdna4-power`, `rdna4-build-env`, and `rdna4-limits` individually. Does not
+include `rdna4-dual`. `rdna4-limits` stays inert until
+`rdna4.limits.enable = true`.
 
 ---
 
@@ -388,6 +467,64 @@ single-ISA closure is required. A future upstream improvement
 ([NixOS/nixpkgs#486613](https://github.com/NixOS/nixpkgs/issues/486613)) will
 make per-ISA binding possible without expensive rebuilds, at which point this
 overlay becomes obsolete.
+
+---
+
+## ROCm sysroot overlay
+
+`overlays.rocm-sysroot` is cache-friendly. It does not override `clr` or any
+other `rocmPackages` member. All ROCm packages come from `cache.nixos.org`.
+Only a small `symlinkJoin` builds locally. It is separate from
+`overlays.default`. Do not apply both unless you want the `clr` rebuild.
+
+```nix
+nixpkgs.overlays = [ inputs.rdna4-stack.overlays.rocm-sysroot ];
+```
+
+The overlay adds one attribute set, `pkgs.rdna4`:
+
+| Attribute | Content |
+|---|---|
+| `rocmSysroot` | `symlinkJoin` in `/opt/rocm` shape |
+| `rocmSysroot.rocmVersion` | the ROCm version, for example `7.2.3` |
+| `hipEnv` | environment variables for a HIP CMake build, for `gfx1201` |
+| `mkHipEnv { gpuTargets = [ ... ]; }` | `hipEnv` for other targets, for example `[ "gfx1200" "gfx1201" ]` |
+| `gpuTargets` | the default list, `[ "gfx1201" ]` |
+
+`rocmSysroot` joins `clr`, `hipcc`, `rocm-runtime`, `rocm-device-libs`,
+`rocm-comgr`, `rocminfo`, `rocm-smi`, `rocm-core`, `rocblas` and `hipblas`.
+`llvm` is a link to `rocmPackages.llvm.clang`, so `llvm/bin/clang++` and
+`llvm/bin/amdgpu-arch` exist. `bin/hipcc` is the `clr` wrapper.
+
+`hipEnv` keys: `ROCM_PATH`, `HIP_PATH`, `HIP_DEVICE_LIB_PATH`, `HIPCXX`,
+`CMAKE_HIP_COMPILER`, `CMAKE_HIP_COMPILER_ROCM_ROOT`, `GPU_TARGETS`,
+`AMDGPU_TARGETS`. `GPU_TARGETS` and `AMDGPU_TARGETS` use `;` as the separator.
+
+Use `hipEnv` in a derivation or a shell:
+
+```nix
+pkgs.stdenv.mkDerivation ({
+  # ...
+  nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.rdna4.rocmSysroot ];
+} // pkgs.rdna4.hipEnv)
+```
+
+The check `checks.x86_64-linux.rocm-sysroot` builds the sysroot. It confirms
+that `bin/hipcc`, `lib/libhsa-runtime64.so`, `amdgcn/bitcode`,
+`llvm/bin/clang++` and `llvm/bin/amdgpu-arch` exist.
+
+---
+
+## Consumers
+
+- nix-radiance (`gitea@code-ssh.novuscotia.com:novuscotia-ops/nix-radiance.git`)
+  packages the HIP inference engine `radiance` for `gfx1201`. It sets
+  `rdna4.inputs.nixpkgs.follows = "nixpkgs"`. It applies
+  `overlays.rocm-sysroot`. It does not apply `overlays.default`. Its devenv
+  module uses the same `pkgs.rdna4.hipEnv` attribute set as `devShells.hip`.
+
+Tell the maintainer before you change the names in `pkgs.rdna4` or in
+`hipEnv`. Consumers depend on them.
 
 ---
 
@@ -466,4 +603,12 @@ statix check .
 
 # Validate flake schema and run smoke tests
 nix flake check
+
+# Evaluate everything, but build nothing.
+# Use this on a host with less than 6 GiB free in /nix.
+nix flake check --no-build
 ```
+
+`nix flake check` builds `checks.x86_64-linux.rocm-sysroot`. That check fetches
+about 2 GiB from the cache (3.6 GiB unpacked). `checks.x86_64-linux.module-options`
+evaluates the modules and builds nothing from ROCm.

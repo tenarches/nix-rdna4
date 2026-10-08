@@ -34,7 +34,8 @@ in
   config = lib.mkIf cfg.enable {
     environment.sessionVariables = {
       ROCR_VISIBLE_DEVICES = lib.mkForce "0,1";
-      HCC_AMDGPU_TARGET    = lib.mkForce "gfx1201,gfx1201";
+      # One entry per ISA, not per device. Both cards are gfx1201.
+      HCC_AMDGPU_TARGET    = lib.mkForce "gfx1201";
       AMDGPU_TARGETS       = lib.mkForce "gfx1201";
       GPU_TARGETS          = lib.mkForce "gfx1201";
     };
