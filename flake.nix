@@ -79,6 +79,26 @@
           pkgsHip = pkgs.extend inputs.self.overlays.rocm-sysroot;
           inherit (pkgsHip.rdna4) rocmSysroot hipEnv;
 
+          # A sysroot from small stand-in packages, for the setup-hook checks.
+          # It builds no ROCm. The stand-in "clr" has a setup hook and a
+          # propagated-build-inputs file, like the real clr.
+          fakeSysroot = pkgsHip.rdna4.mkRocmSysroot {
+            name = "fake-rocm-sysroot";
+            version = "0";
+            clang = pkgs.writeTextDir "bin/clang++" "clang";
+            paths = [
+              (pkgs.runCommand "fake-clr" {} ''
+                mkdir -p $out/bin $out/llvm $out/nix-support
+                echo clr > $out/bin/hipcc
+                echo 'export HIP_PATH=/wrong HIP_DEVICE_LIB_PATH=/wrong HIP_CLANG_PATH=/wrong GPU_TARGETS=wrong' \
+                  > $out/nix-support/setup-hook
+                echo /nix/store/00000000000000000000000000000000-x \
+                  > $out/nix-support/propagated-build-inputs
+              '')
+              (pkgs.writeTextDir "bin/hipcc" "hipcc")
+            ];
+          };
+
           # Evaluate a minimal NixOS system with the given modules.
           # Used only by eval-level checks. Nothing is built.
           evalNixos = modules: inputs.nixpkgs.lib.nixosSystem {
@@ -262,8 +282,11 @@
               cmake
               ninja
               pkg-config
-              rocmSysroot
             ];
+
+            # buildInputs, not nativeBuildInputs: the cc wrapper and cmake
+            # then add the sysroot include/, lib/ and cmake prefix.
+            buildInputs = [ rocmSysroot ];
 
             shellHook = ''
               echo "HIP build environment: ROCm ${rocmSysroot.rocmVersion}, targets $GPU_TARGETS"
@@ -299,11 +322,63 @@
               s=${rocmSysroot}
               for f in bin/hipcc lib/libhsa-runtime64.so amdgcn/bitcode \
                        llvm/bin/clang++ llvm/bin/amdgpu-arch \
-                       lib/libamdhip64.so lib/librocblas.so lib/libhipblas.so; do
+                       lib/libamdhip64.so lib/librocblas.so lib/libhipblas.so \
+                       include/hipblas/hipblas.h \
+                       include/hipblas-common/hipblas-common.h \
+                       nix-support/setup-hook; do
                 test -e "$s/$f" || { echo "missing: $f" >&2; exit 1; }
               done
               test -n "$(ls "$s/amdgcn/bitcode")"
+              # The clr hook and the clr propagated inputs must be gone.
+              test ! -e "$s/nix-support/propagated-build-inputs"
+              if grep -q '${pkgs.rocmPackages.clr}' "$s/nix-support/setup-hook"; then
+                echo "setup-hook refers to clr" >&2; exit 1
+              fi
               echo "rocm-sysroot ${rocmSysroot.rocmVersion}: pass" > $out
+            '';
+
+            # The sysroot setup hook sets hipEnv defaults and not the clr
+            # values. Uses fakeSysroot, so it builds no ROCm.
+            sysroot-setup-hook = pkgs.runCommand "check-rdna4-sysroot-setup-hook" {
+              buildInputs = [ fakeSysroot ];
+            } ''
+              set -eu
+              f=${fakeSysroot}
+              fail() { echo "FAIL: $*" >&2; exit 1; }
+              test "$HIP_PATH" = "$f" || fail "HIP_PATH=$HIP_PATH"
+              test "$ROCM_PATH" = "$f" || fail "ROCM_PATH=$ROCM_PATH"
+              test "$CMAKE_HIP_COMPILER_ROCM_ROOT" = "$f" || fail "ROCM_ROOT"
+              test "$HIP_DEVICE_LIB_PATH" = "$f/amdgcn/bitcode" || fail "HIP_DEVICE_LIB_PATH"
+              test "$HIPCXX" = "$f/llvm/bin/clang++" || fail "HIPCXX=$HIPCXX"
+              test "$CMAKE_HIP_COMPILER" = "$f/llvm/bin/clang++" || fail "CMAKE_HIP_COMPILER"
+              test "$GPU_TARGETS" = "gfx1201" || fail "GPU_TARGETS=$GPU_TARGETS"
+              test "$AMDGPU_TARGETS" = "gfx1201" || fail "AMDGPU_TARGETS"
+              test "$HIP_PLATFORM" = amd || fail "HIP_PLATFORM=$HIP_PLATFORM"
+              test "$NIX_CC_USE_RESPONSE_FILE" = 0 || fail "NIX_CC_USE_RESPONSE_FILE"
+              test -z "''${HIP_CLANG_PATH:-}" || fail "HIP_CLANG_PATH=$HIP_CLANG_PATH"
+              case "$HIP_PATH $HIP_DEVICE_LIB_PATH" in *wrong*) fail "clr value leaked";; esac
+              test "$(cat $f/bin/hipcc)" = clr || fail "bin/hipcc is not the clr one"
+              test "$(cat $f/llvm/bin/clang++)" = clang || fail "llvm link"
+              test ! -e $f/nix-support/propagated-build-inputs || fail "propagated inputs"
+              echo "sysroot-setup-hook: pass" > $out
+            '';
+
+            # The setup hook keeps the values that the derivation sets, as
+            # with hipEnv or mkHipEnv attributes.
+            sysroot-setup-hook-keeps-env = pkgs.runCommand "check-rdna4-sysroot-setup-hook-keeps-env" {
+              buildInputs = [ fakeSysroot ];
+              HIP_PATH = "/custom/hip";
+              GPU_TARGETS = "gfx1200;gfx1201";
+              HIP_PLATFORM = "custom";
+              NIX_CC_USE_RESPONSE_FILE = "1";
+            } ''
+              set -eu
+              test "$HIP_PATH" = /custom/hip
+              test "$GPU_TARGETS" = "gfx1200;gfx1201"
+              test "$HIP_PLATFORM" = custom
+              test "$NIX_CC_USE_RESPONSE_FILE" = 1
+              test "$ROCM_PATH" = ${fakeSysroot}
+              echo "sysroot-setup-hook-keeps-env: pass" > $out
             '';
 
             # Eval-only checks. They read NixOS config values and build
@@ -326,6 +401,11 @@
               ]).config;
 
               withoutSysroot = (evalNixos [ self'.rdna4-rocm ]).config;
+
+              mapCount = hostDef: (evalNixos [
+                self'.rdna4-limits
+                { rdna4.limits.enable = true; boot.kernel.sysctl."vm.max_map_count" = hostDef; }
+              ]).config.boot.kernel.sysctl."vm.max_map_count";
 
               optRocm = c: discard (lib.concatStringsSep " "
                 (lib.filter (r: lib.hasPrefix "L+ /opt/rocm " r) c.systemd.tmpfiles.rules));
@@ -350,6 +430,10 @@
                   limitFor "@render" "nofile" "hard" == [ "65536" ];
                 "limits: vm.max_map_count set" =
                   full.boot.kernel.sysctl."vm.max_map_count" == 1048576;
+                "limits: plain host vm.max_map_count wins" =
+                  mapCount 262144 == 262144;
+                "limits: host mkDefault vm.max_map_count does not win" =
+                  mapCount (lib.mkDefault 262144) == 1048576;
                 "rocm: /opt/rocm uses the sysroot when the overlay is applied" =
                   lib.hasInfix "-rocm-sysroot-" (optRocm withSysroot);
                 "rocm: /opt/rocm keeps the old join without the overlay" =

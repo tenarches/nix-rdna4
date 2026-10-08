@@ -66,9 +66,11 @@ in
       default = 1048576;
       description = ''
         Value for the vm.max_map_count sysctl. NixOS already sets 1048576
-        with mkDefault. This module sets it at a slightly higher priority,
-        so the value stays if the NixOS default changes. A direct host
-        setting still wins.
+        with lib.mkDefault (priority 1000). This module sets the sysctl with
+        lib.mkOverride 999, so the value stays if the NixOS default changes.
+        A plain host assignment of boot.kernel.sysctl."vm.max_map_count"
+        (priority 100) wins over this module. A host value set with
+        lib.mkDefault does NOT win. To change the value, set this option.
       '';
     };
   };
